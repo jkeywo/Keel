@@ -1,0 +1,1 @@
+Check ./Spec/Manifest.md for the project spec
