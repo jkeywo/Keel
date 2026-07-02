@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "keel-dry-run",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "src/index.ts", "--dry-run"],
+      "port": 4400
+    }
+  ]
+}

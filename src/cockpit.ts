@@ -1,6 +1,10 @@
 /**
  * The walking-skeleton cockpit: one server-rendered page, vanilla JS,
  * polling /api/state. Mission Board + Inbox + Runs only (Slice 1 scope).
+ *
+ * Rendering is keyed per section: a section's DOM is only rewritten when
+ * its underlying data changes, and the Inbox snapshots/restores form state
+ * across rewrites so polling never wipes an in-progress answer (#5).
  */
 export function cockpitPage(): string {
   return `<!doctype html>
@@ -42,6 +46,7 @@ export function cockpitPage(): string {
 <div id="runs"></div>
 <script>
 var state = { missions: [], runs: [], questions: [], approvals: [] };
+var lastMissionsKey = null, lastInboxKey = null, lastRunsKey = null;
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -85,7 +90,7 @@ function cancelRun(id) {
   if (confirm('Cancel run ' + id + '?')) api('/api/runs/' + encodeURIComponent(id) + '/cancel');
 }
 
-function render() {
+function renderMissions() {
   var m = document.getElementById('missions');
   m.innerHTML = '<h2>Mission Board</h2>' + state.missions.map(function (mi) {
     var wfs = (mi.workflows || []).map(function (w) {
@@ -95,8 +100,21 @@ function render() {
     return '<div class="card"><strong>' + esc(mi.title) + '</strong> <span class="muted">' + esc(mi.id) + ' — ' + active + ' active run(s)</span><br>' +
       '<span class="muted">' + esc(mi.description || '') + '</span><div style="margin-top:.5rem">' + wfs + '</div></div>';
   }).join('') || '<div class="muted">No missions defined.</div>';
+}
 
+function renderInbox() {
   var inbox = document.getElementById('inbox');
+
+  // Snapshot in-progress form state before rewriting the DOM.
+  var checkedRadios = {};
+  inbox.querySelectorAll('input[type=radio]:checked').forEach(function (el) {
+    checkedRadios[el.name] = el.value;
+  });
+  var textValues = {};
+  inbox.querySelectorAll('input[type=text]').forEach(function (el) {
+    if (el.value) textValues[el.id] = el.value;
+  });
+
   var qHtml = state.questions.map(function (q) {
     var opts = (q.options || []).map(function (o, i) {
       var letter = String.fromCharCode(65 + i);
@@ -116,6 +134,17 @@ function render() {
   }).join('');
   inbox.innerHTML = (qHtml + aHtml) || '<div class="muted">Nothing waiting on you.</div>';
 
+  // Restore form state for inputs that still exist.
+  inbox.querySelectorAll('input[type=radio]').forEach(function (el) {
+    if (checkedRadios[el.name] === el.value) el.checked = true;
+  });
+  Object.keys(textValues).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.value = textValues[id];
+  });
+}
+
+function renderRuns() {
   var runs = document.getElementById('runs');
   runs.innerHTML = state.runs.length
     ? '<table><tr><th>Run</th><th>Workflow</th><th>Issue</th><th>State</th><th>Step</th><th>Last log</th><th></th></tr>' +
@@ -128,6 +157,15 @@ function render() {
           '<td>' + (cancellable ? '<button class="secondary" onclick="cancelRun(\\'' + esc(r.runId) + '\\')">Cancel</button>' : '') + '</td></tr>';
       }).join('') + '</table>'
     : '<div class="muted">No runs yet.</div>';
+}
+
+function render() {
+  var mKey = JSON.stringify([state.missions, state.runs.map(function (r) { return r.mission + '|' + r.state; })]);
+  if (mKey !== lastMissionsKey) { lastMissionsKey = mKey; renderMissions(); }
+  var iKey = JSON.stringify([state.questions, state.approvals]);
+  if (iKey !== lastInboxKey) { lastInboxKey = iKey; renderInbox(); }
+  var rKey = JSON.stringify(state.runs);
+  if (rKey !== lastRunsKey) { lastRunsKey = rKey; renderRuns(); }
 }
 
 function refresh() {
