@@ -28,10 +28,17 @@ label-based triggers, context indexing. See
 
 ## Quickstart
 
+On Windows, double-click **`run-keel.bat`** (installs dependencies on first
+run, starts the cockpit, opens the browser). Add `--dry-run` for a safe
+sandbox. Full instructions, prerequisites, and troubleshooting:
+[`docs/SETUP.md`](docs/SETUP.md).
+
+From a terminal:
+
 ```bash
 npm install
 npm test            # unit tests (mocked GitHub + models)
-npm run dry-run     # cockpit against a mock GitHub + canned model — safe to click around
+npm run dry-run     # cockpit against a mock GitHub — safe to click around
 npm run dev         # the real thing: jkeywo/Keel via gh, local models via Ollama
 ```
 
