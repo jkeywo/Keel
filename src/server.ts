@@ -1,6 +1,10 @@
+import { createRequire } from 'node:module';
 import express from 'express';
 import type { Runtime } from './runtime.js';
 import { cockpitPage } from './cockpit.js';
+
+const _require = createRequire(import.meta.url);
+const { version } = _require('../package.json') as { version: string };
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -10,6 +14,10 @@ export function createServer(rt: Runtime): express.Express {
 
   app.get('/', (_req, res) => {
     res.type('html').send(cockpitPage());
+  });
+
+  app.get('/api/version', (_req, res) => {
+    res.json({ version });
   });
 
   app.get('/api/state', (_req, res) => {
