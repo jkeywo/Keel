@@ -1,0 +1,44 @@
+id: feature-prd
+title: Feature PRD Workflow
+description: |
+  Turn a feature request issue into an accepted PRD and small
+  implementation issues. Decomposition ends the workflow; each child
+  issue starts its own run of another workflow via triggers
+  (see Spec/01-AgentSpec.md, Sequencing and Fan-Out).
+capabilities: [read, edit, git]
+steps:
+  - id: grill
+    task: grill
+    description: Ask clarifying questions about the feature request.
+    agent: prd-interviewer
+    prompt: prd-interviewer
+    context:
+      budget: medium
+      strategy: focused
+      required_sources: [issue, answers]
+      max_tokens: 12000
+    outputs: [answers]
+    hitl: question
+  - id: prd
+    task: write_prd
+    description: Draft a PRD from the issue and accepted answers.
+    agent: prd-writer
+    prompt: prd-writer
+    context:
+      budget: medium
+      strategy: focused
+      required_sources: [issue, answers]
+      max_tokens: 16000
+    outputs: [prd_file]
+    hitl: approval
+  - id: decompose
+    task: decompose
+    description: Break the accepted PRD into small implementation issues.
+    agent: issue-decomposer
+    prompt: issue-decomposer
+    context:
+      budget: medium
+      strategy: focused
+      required_sources: [prd]
+      max_tokens: 16000
+    outputs: [child_issues]

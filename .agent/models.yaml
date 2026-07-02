@@ -1,0 +1,40 @@
+# Model router configuration (see Spec/04-RuntimeSpec.md §5.10–5.11).
+# `skills` are model competencies (planner, coder, reviewer, summariser) —
+# distinct from capabilities, which are tool permissions.
+models:
+  local:qwen-coder:
+    provider: ollama
+    model: qwen3.6-coder:latest
+    context_window: 32768
+    safe_prompt_budget: 24000
+    reserved_output_budget: 4000
+    skills: [coder, planner, summariser]
+
+  local:qwen-large:
+    provider: ollama
+    model: qwen3.6:27b
+    context_window: 32768
+    safe_prompt_budget: 24000
+    reserved_output_budget: 4000
+    skills: [planner, reviewer]
+
+  local:llama3:
+    provider: ollama
+    model: llama3:8b
+    context_window: 8192
+    safe_prompt_budget: 6000
+    reserved_output_budget: 1500
+    skills: [summariser]
+
+  # Last-resort canned provider so the loop stays demonstrable offline.
+  # Remove from routing once local routing is proven.
+  mock:default:
+    provider: mock
+    unlimited: true
+    skills: [planner, coder, reviewer, summariser]
+
+routing:
+  planner: [local:qwen-large, local:qwen-coder, mock:default]
+  coder: [local:qwen-coder, mock:default]
+  reviewer: [local:qwen-large, mock:default]
+  summariser: [local:llama3, local:qwen-coder, mock:default]

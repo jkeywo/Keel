@@ -1,0 +1,13 @@
+spec_version: 1.0.0
+missions:
+  - id: keel-bootstrap
+    title: Keel Bootstrap
+    description: |
+      Build Keel using Keel: run the feature-prd loop against this
+      repository's own feature requests.
+    permissions: [read, edit, git]
+    workflows:
+      - id: keel-feature-prd
+        workflow: feature-prd
+        triggers:
+          - type: manual

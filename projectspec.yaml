@@ -1,0 +1,19 @@
+# ProjectSpec for Keel itself (see Spec/05-ProjectSpec.md)
+language: typescript
+build:
+  - npm run build
+test:
+  - npm test
+directories:
+  src: src
+  tests: test
+scripts:
+  start: npm start
+  dev: npm run dev
+  dry-run: npm run dry-run
+metadata:
+  description: "Keel - Phoenix Agentic Engineering Suite: local runtime + cockpit"
+  node_version: ">=20"
+tools:
+  - express
+  - vitest
