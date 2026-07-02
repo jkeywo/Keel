@@ -134,11 +134,15 @@ When writing the prompt body:
 
 ## Referencing Prompts in AgentSpec
 
-Within AgentSpec, a task step may reference a prompt by its `id`:
+Each task template in the runtime's library declares a default prompt id.
+Within AgentSpec, a workflow step MAY override that default by referencing a
+prompt by its `id` (see `01-AgentSpec.md`, Workflow Steps and Tasks):
 
 ```yaml
 steps:
   - id: ask-clarifying-questions
+    task: grill
+    agent: prd-interviewer
     prompt: prd-interviewer
     context:
       required_sources:
@@ -149,9 +153,15 @@ steps:
 
 The runtime loads the prompt file `.agent/prompts/prd-interviewer.md`, reads
 its frontmatter to validate required inputs and constructs the final prompt
-by filling placeholders with values extracted from the context.  Any
-assumptions declared in the frontmatter (e.g. `max_tokens`) override or
-refine the context profile declared in AgentSpec.
+by filling placeholders with values extracted from the context.
+
+Assumptions declared in the frontmatter (e.g. `max_tokens`) are **advisory**:
+they never override the context profile declared in AgentSpec, which always
+wins.  If a step's profile conflicts with a prompt's assumptions (for
+example, the profile's budget is smaller than the prompt's declared
+minimum), validation fails loudly at workflow load time rather than either
+side being silently adjusted.  The Prompt Budgeter (RuntimeSpec §5.10) makes
+the final fit decision at execution time.
 
 ## Prompt Versioning
 

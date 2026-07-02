@@ -30,12 +30,12 @@ The later specifications are:
 | `02-GameSpec.md` | Defines a structured DSL for capturing the game design, mechanics, systems, roles, loops, design decisions, and open questions. |
 | `03-CockpitSpec.md` | Defines the local web GUI: Mission Board, Design Board, Inbox, agent run views, model monitor, and GitHub-linked interaction model. |
 | `04-RuntimeSpec.md` | Defines the execution engine: scheduler, adapters, worktree manager, sandbox, provider routing, GitHub integration, and event loop. |
+| `05-ProjectSpec.md` | Defines repository-level facts such as language, build commands, test commands, directory layout hints, and tooling. |
+| `06-RepositorySpec.md` | Defines the repository layout, GitHub label and branch conventions, and required ancillary files. It is the canonical source for layout and labels. |
+| `07-PromptLibrarySpec.md` | Defines how prompts are stored, structured, named and versioned under `.agent/prompts/`. |
+| `08-ImplementationRoadmap.md` | Suggests a build sequence for the suite, cut around the milestones in this document. |
 
-A possible future document, not yet part of this first suite, is:
-
-| Future document | Purpose |
-|---|---|
-| `ProjectSpec.md` | Defines repository-level facts such as language, engine, CI, targets, commands, conventions, and deployment. |
+Where documents disagree on a detail, the precedence rules in `MANIFEST.md` apply.
 
 ---
 
@@ -142,22 +142,20 @@ Recommended local layout:
   logs/
 ```
 
-Recommended committed repository layout:
+Recommended committed repository layout (canonical definition in `06-RepositorySpec.md`):
 
 ```text
+projectspec.yaml
+
 .agent/
   workflows/
   prompts/
   models.yaml
   labels.yaml
-  cockpit.yaml
+  context/
 
-.game/
+.gamespec/
   phoenix.gamespec.yaml
-  mechanics/
-  systems/
-  roles/
-  loops/
 
 docs/
   prds/
@@ -182,7 +180,7 @@ Example comment metadata:
 ```markdown
 <!-- agentspec:run
 id: run-2026-07-01-004
-workflow: feature-development
+workflow: issue-implementation
 agent: tdd-developer
 model: local:qwen3-coder
 state: ready-for-human-review
@@ -278,13 +276,12 @@ The user can paste that pack into a subscription model, then paste the result ba
 
 Agents must not edit the user’s active working tree directly.
 
-Each implementation run should create an isolated worktree.
+Each implementation run should create an isolated worktree, kept outside the repository checkout so it cannot pollute the repo or be picked up by builds.
 
 Example:
 
 ```text
-project-phoenix-v2/
-worktrees/
+~/.agentspec/worktrees/project-phoenix-v2/
   run-2026-07-01-004/
   run-2026-07-01-005/
 ```
@@ -692,7 +689,7 @@ The cockpit exists to reduce coordination burden, not to remove human authorship
 
 No workflow should depend on one specific model.
 
-Agents request capabilities such as:
+Agents request model **skills** (not to be confused with capabilities, which are tool permissions) such as:
 
 - planner
 - coder
@@ -905,11 +902,11 @@ The runtime is local-first.
 
 The model router maps agent capability requests to available models.
 
-Example capability request:
+Example skill request:
 
 ```yaml
 requires:
-  capability: coder
+  skill: coder
   context: medium
   privacy: local-preferred
   automation: required
@@ -936,20 +933,16 @@ The agent does not know which concrete model is selected.
 
 The initial GitHub state model should use labels heavily.
 
-Suggested label groups:
+The canonical label set is defined in `06-RepositorySpec.md`. In summary:
 
 ```text
-type:feature-request
+type:feature
 type:bug
-type:prd
-type:design-question
-type:task
 
 state:needs-grilling
 state:prd-draft
 state:needs-human
-state:ready-for-decomposition
-state:ready-for-agent
+state:ready-for-work
 state:agent-working
 state:blocked
 state:pr-open
@@ -960,11 +953,9 @@ state:done
 mission:fleet-sensors
 mission:asset-pipeline
 mission:wasm-optimisation
-
-agent:active
-agent:generated
-agent:needs-review
 ```
+
+The `mission:<id>` group links issues to missions so the Mission Board can filter without parsing comments. Additional type labels (e.g. `type:prd`, `type:design-question`, `type:task`) may be added per project and documented in `.agent/labels.yaml`. There is no `agent:*` label group; agent authorship is recorded in structured `agentspec:*` metadata comments instead.
 
 Long-lived specs should be stored as Markdown files.
 
@@ -1222,7 +1213,22 @@ Mitigation:
 
 ---
 
-### 10.7 Hidden agent memory
+### 10.7 GitHub API rate limits
+
+Risk:
+
+> The runtime polls GitHub with the user's personal token (5,000 requests/hour) and hits rate limits, delaying HITL answers and staleness detection.
+
+Mitigation:
+
+- Use conditional requests (ETags) so unchanged resources cost no quota.
+- Poll only issues with active runs; back off idle repositories.
+- Cache aggressively; treat the cache as disposable.
+- Consider a webhook listener as future work (see RuntimeSpec §13).
+
+---
+
+### 10.8 Hidden agent memory
 
 Risk:
 
@@ -1331,6 +1337,9 @@ Dependencies should be one-directional where possible.
 CockpitSpec depends on AgentSpec concepts.
 RuntimeSpec implements AgentSpec.
 AgentSpec may reference GameSpec as context.
+AgentSpec and RuntimeSpec read ProjectSpec for build and test commands.
+RepositorySpec defines the layout and labels the other specs rely on.
+PromptLibrarySpec is consumed by RuntimeSpec when assembling prompts.
 GameSpec should not depend on RuntimeSpec.
 EngineeringVision may refer to all documents.
 ```
@@ -1460,7 +1469,7 @@ Examples:
 - git.
 - build.
 - browser.
-- asset-tools.
+- asset.
 - dangerous.
 
 ---
@@ -1491,14 +1500,9 @@ These are not blockers for the first implementation, but they should be resolved
 
 ### 14.1 ProjectSpec
 
-Should repository-level configuration become its own `ProjectSpec` document?
-
-Likely yes, later.
-
-For now, repository-level configuration can live in:
+**Resolved.** Repository-level configuration is now its own document: `05-ProjectSpec.md`, realised as `projectspec.yaml` at the repository root. Workflow and model configuration remain in:
 
 ```text
-.agent/cockpit.yaml
 .agent/workflows/
 .agent/models.yaml
 ```
@@ -1556,7 +1560,7 @@ This document should be reviewed for:
 - Whether the Mission → Workflow → Run → Task hierarchy is accepted.
 - Whether subscriptions-as-manual-escalation is acceptable.
 - Whether any non-goals should become goals.
-- Whether `ProjectSpec` should be pulled into the first suite or deferred.
+- Whether `ProjectSpec` (now `05-ProjectSpec.md`) captures the right repository-level facts.
 
 ---
 

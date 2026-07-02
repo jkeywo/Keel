@@ -28,7 +28,7 @@ CockpitSpec does not define styling, colour schemes or theming. Those concerns a
 4. **Human-in-the-loop.** Questions from agents should appear promptly in an Inbox; the user should be able to answer them with minimal friction. The cockpit should never hide or discard questions.
 5. **Scalability.** The UI must handle multiple missions, workflows and runs simultaneously, with filtering and search to avoid overwhelming the user.
 6. **Extensibility.** New screens and components should be pluggable. The cockpit should adapt to new capabilities, tasks and models without large redesigns.
-7. **GitHub fidelity.** All durable state is persisted in GitHub. The cockpit should not display stale data; it must reflect the latest issue labels, comments, PR statuses and commits.
+7. **GitHub fidelity.** All durable state is persisted in GitHub. The cockpit must reflect the latest state known to the runtime and show data age where API rate limits force a stale read (see RuntimeSpec §5.5); it must never present the local cache as more authoritative than GitHub.
 
 ## Terminology
 
@@ -174,7 +174,7 @@ Whenever a PR merges or significant changes occur in GameSpec, the Repository In
 
 ## Integration
 
-* **AgentSpec.** Each mission, workflow, run and step presented in the cockpit directly corresponds to objects defined in AgentSpec. The cockpit reads mission YAML files and displays them on the Mission Board. Capabilities, context profiles and HITL flags drive UI behaviours (e.g. showing context overflow options when `max_tokens` is reached).
+* **AgentSpec.** Each mission, workflow, run and step presented in the cockpit directly corresponds to objects defined in AgentSpec. The cockpit reads mission YAML files and displays them on the Mission Board. Capabilities, context profiles and HITL kinds drive UI behaviours: `hitl: question` steps render as answerable forms in the Inbox, `hitl: approval` steps render as approve/reject items, and context overflow options appear when `max_tokens` is exceeded.
 * **GameSpec.** The Design Board is generated from GameSpec. Edits to design content in the cockpit update GameSpec YAML and commit changes to the repository. Open questions in GameSpec feed into the Inbox as design issues.
 * **Runtime.** The cockpit communicates with the runtime via an API (not defined here) to start runs, fetch run status, submit answers and view logs. The runtime updates the cockpit via event notifications.
 * **GitHub.** The cockpit uses GitHub’s API for reading issues, PRs, labels and comments; writing answers and summaries; and checking CI status. It always displays the latest canonical state from GitHub.

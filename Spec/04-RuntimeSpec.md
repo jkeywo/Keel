@@ -110,7 +110,7 @@ The runtime should be implemented as a local service. The cockpit communicates w
 
 ### 5.1 Scheduler
 
-The scheduler detects or receives triggers and creates runs.
+The scheduler detects or receives triggers and creates runs. Triggers are declared per mission workflow in AgentSpec (see `01-AgentSpec.md`, Triggers).
 
 Supported trigger types:
 
@@ -119,10 +119,10 @@ manual:
   source: cockpit
 
 github_label:
-  issue_label: type:feature-request
+  label: type:feature
 
 github_comment:
-  command: /agent start feature-development
+  command: /agent start feature-prd
 
 scheduled:
   cron: "0 9 * * *"
@@ -185,7 +185,7 @@ A run record contains:
 ```yaml
 run_id: run-2026-07-01-004
 mission: fleet-sensors
-workflow: feature-development
+workflow: feature-prd
 source:
   type: github_issue
   id: 42
@@ -258,6 +258,8 @@ Required operations:
 
 For v1, the runtime may use the GitHub CLI (`gh`) or the GitHub REST API with the user’s token. Actions appear as the user, not as a bot.
 
+The adapter must respect GitHub API rate limits (5,000 requests/hour for a user token). It should use conditional requests (ETags / `If-None-Match`, which cost no quota when nothing changed), poll only issues with active runs, back off idle repositories, and surface remaining-quota status to the cockpit. A webhook listener is future work (§13); until then, polling cadence is a config value, not a constant.
+
 All comments created by the runtime must include structured AgentSpec metadata where relevant.
 
 Example run summary:
@@ -265,7 +267,7 @@ Example run summary:
 ```markdown
 <!-- agentspec:run
 id: run-2026-07-01-004
-workflow: feature-development
+workflow: feature-prd
 step: prd
 agent: prd-writer
 state: completed
@@ -335,6 +337,7 @@ git:
   - create branch
   - commit
   - push agent branch
+  - create issue
   - open PR
   - update PR description
   - comment on issue
@@ -486,9 +489,10 @@ models:
 
   manual:gemini:
     provider: manual
-    context_window: huge
-    safe_prompt_budget: huge
+    unlimited: true
 ```
+
+Models declaring `unlimited: true` (manual escalation targets) bypass budget checks; the budgeter still records the estimated prompt size in the escalation pack so the user knows what they are pasting.
 
 If estimated prompt size exceeds budget, the runtime chooses one of:
 
@@ -514,12 +518,14 @@ Inputs:
 ```yaml
 agent: tdd-developer
 task: implement
-capability: coder
+skill: coder
 context_budget: medium
 automation_required: true
 privacy: local_preferred
 estimated_tokens: 14500
 ```
+
+(`skill` names a model competency — coder, planner, reviewer, summariser — and is distinct from *capabilities*, which are tool permissions enforced by the sandbox.)
 
 Outputs:
 
@@ -567,7 +573,7 @@ Question format:
 <!-- agentspec:question
 id: q-42-001
 run_id: run-2026-07-01-004
-workflow: feature-development
+workflow: feature-prd
 step_id: grill
 -->
 
@@ -591,6 +597,15 @@ A
 ```
 
 The runtime should treat a human answer as durable context.
+
+The HITL Manager handles both HITL kinds defined in AgentSpec: `question` steps (pause until every open question is answered) and `approval` steps (pause after the step until the human approves or rejects its output).
+
+Answer validation rules:
+
+- Question ids follow `q-<issue-number>-<sequence>` (see AgentSpec, HITL Integration).
+- An answer is only accepted from the repository owner or accounts explicitly listed in local config. `agentspec:answer` blocks from any other account are ignored and flagged in the Inbox.
+- The first non-empty line must begin with one of the offered option letters or `custom:`. Malformed answers are ignored; the cockpit shows a validation error and the question stays open.
+- If multiple valid answers exist for one question, the latest one posted **before the run resumes** wins. Once the run has resumed, later answers have no effect; changing a decision requires a new question or a design-decision workflow.
 
 ---
 
@@ -842,7 +857,7 @@ The runtime may summarise logs into GitHub comments.
 ### 8.1 Feature Request to PRD
 
 1. User creates or selects feature issue.
-2. Cockpit starts `feature-development` workflow.
+2. Cockpit starts `feature-prd` workflow.
 3. Runtime creates run.
 4. PRD interviewer assembles context from issue and GameSpec.
 5. Prompt Budgeter checks selected model.
@@ -957,6 +972,24 @@ Minimum security rules:
 
 Command allowlists should be preferred over broad shell access.
 
+### 10.1 Hard enforcement at GitHub
+
+The capability sandbox is local software; a bug or a successful prompt injection bypasses everything it forbids. The prohibitions in the Engineering Vision (§3.7) must therefore also be enforced server-side:
+
+- **Branch protection on `main`** is required: no direct pushes, no force pushes, PRs required. This makes "agents may not push to main" a property of the repository, not a promise of the runtime.
+- **Use a fine-grained personal access token** scoped to only the repositories and permissions the runtime needs (contents, issues, pull requests). Do not give the runtime a classic full-scope token. The token must not have permission to modify repository settings, secrets, or workflows.
+
+### 10.2 Untrusted content and prompt injection
+
+Everything agents read from GitHub — issue bodies, comments, PR descriptions — is *content*, not instructions. Anyone who can comment on an issue can attempt to inject instructions into an agent's context.
+
+Minimum rules:
+
+- Prompts must clearly delimit quoted GitHub content from system instructions.
+- `agentspec:answer` blocks are only honoured from the repository owner or explicitly configured accounts (§5.12).
+- Agent-proposed actions derived from issue content still pass through the capability sandbox; content can never widen a run's capabilities.
+- On public repositories, treat comments from non-collaborators with particular suspicion; the runtime may be configured to ignore them entirely during context assembly.
+
 ---
 
 ## 11. Review Against Engineering Vision
@@ -1032,12 +1065,13 @@ This completes the first-pass specification suite after:
 The next useful artefact would be an implementation plan or a repository bootstrap package containing:
 
 ```text
+projectspec.yaml
 .agent/
   workflows/
   prompts/
   labels.yaml
   models.yaml
-.game/
+.gamespec/
   phoenix.gamespec.yaml
 docs/
   prds/

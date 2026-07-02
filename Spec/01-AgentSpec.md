@@ -26,7 +26,7 @@ The specification intentionally avoids prescribing a specific UI or command‑li
 The AgentSpec language is designed according to these principles:
 
 1. **Declarative.** Workflows describe desired outcomes and sequences of activities without encoding the imperative logic of how to achieve them.
-2. **Stateless agents.** Agents are stateless executors; they reconstruct context from issues, GameSpec, the Repository Index and linked PRDs rather than relying on hidden memory.  This aligns with the engineering vision that the canonical state lives in GitHub【324830502334722†screenshot】.
+2. **Stateless agents.** Agents are stateless executors; they reconstruct context from issues, GameSpec, the Repository Index and linked PRDs rather than relying on hidden memory.  This aligns with the engineering vision that the canonical state lives in GitHub.
 3. **Mission hierarchy.** Work is organised into missions, workflows, runs and tasks.  Missions capture long‑lived objectives; workflows define reusable processes; runs are concrete instances of workflows; tasks describe individual executable units.
 4. **Explicit capabilities.** Each task declares which capabilities it requires.  Workflows may only reference capabilities that have been granted by the mission.  This enables fine‑grained control over what the runtime may do, preventing dangerous actions such as force‑pushing or merging code without review.
 5. **Human‑in‑the‑loop.** Ambiguities trigger questions which are recorded in GitHub comments and surfaced in the cockpit.  AgentSpec treats human input as a first‑class dependency rather than a failure case.
@@ -50,30 +50,40 @@ The AgentSpec language is designed according to these principles:
 
 ### Document Format
 
-AgentSpec files are YAML documents with the top‑level key `missions`.  Each mission entry describes the mission and lists the workflows it includes.  Workflows may either be defined inline under `workflows` or referenced from reusable workflow definitions stored elsewhere (e.g. in `./agent/workflows`).
+AgentSpec files are YAML documents with the top‑level key `missions`.  Each mission entry describes the mission and lists the workflows it includes.  Workflows may either be defined inline under `workflows` or referenced from reusable workflow definitions stored elsewhere (e.g. in `.agent/workflows/`).
 
 The high‑level grammar (expressed informally) is as follows:
 
 ```
-AgentSpec := { missions: [ Mission ] }
+AgentSpec := { spec_version: String, missions: [ Mission ] }
 Mission  := { id: String, title: String, description?: String,
               workflows: [ MissionWorkflow ],
               permissions?: [ Capability ],
-              design_links?: [ String ],
-              spec_version: String }
+              design_links?: [ String ] }
 MissionWorkflow := { id: String, workflow: String |
                       inline_workflow: Workflow,
+                      triggers?: [ Trigger ],
                       inputs?: { ... } }
+Trigger := { type: "manual" | "github_label" | "github_comment" |
+                   "scheduled" | "post_merge",
+             ...type-specific fields (see Triggers)... }
 Workflow := { id: String, title: String, description?: String,
               steps: [ WorkflowStep ],
               capabilities: [ Capability ],
               version?: String }
 WorkflowStep := { id: String, task: String, description?: String,
-                  agent: String, outputs?: [ Output ],
-                  hitl?: Boolean }
+                  agent: String, prompt?: String,
+                  context?: ContextProfile,
+                  outputs?: [ Output ],
+                  hitl?: "question" | "approval" }
+ContextProfile := { budget?: "small" | "medium" | "large",
+                    strategy?: "focused" | "broad",
+                    required_sources?: [ String ],
+                    max_files?: Integer,
+                    max_tokens?: Integer }
 ```
 
-Additional fields may be included for future expansion.  `spec_version` is required at the mission level to allow backwards compatibility.
+Additional fields may be included for future expansion.  `spec_version` is required once at the document level to allow backwards compatibility.
 
 ### Missions
 
@@ -82,25 +92,46 @@ A mission entry declares a long‑lived objective.  Missions must specify:
 * `id` – a machine‑readable identifier (e.g. `fleet-sensors`).
 * `title` – a human‑friendly title for display in the cockpit.
 * `description` – optional free‑form text describing the goal and any context not captured in GameSpec.
-* `workflows` – a list of mission workflows.  Each entry either references a reusable workflow by `workflow: <name>` or defines one inline under `inline_workflow`.
+* `workflows` – a list of mission workflows.  Each entry either references a reusable workflow by `workflow: <name>` or defines one inline under `inline_workflow`.  Entries may declare `triggers` that start runs automatically (see Triggers) and `inputs` passed to the workflow.
 * `permissions` – optional list of capabilities granted to the mission.  If omitted, the mission inherits a default safe set (`read`, `edit`, `git`, `build`).
 * `design_links` – optional array of links into GameSpec or the GitHub Wiki that contextualise the mission (e.g. a specific mechanic file).
-* `spec_version` – the version of AgentSpec this document adheres to (e.g. `1.0.0`).  Tools may reject or warn about unsupported versions.
+
+`spec_version` is declared once at the top of the document (e.g. `1.0.0`), not per mission.  Tools may reject or warn about unsupported versions.
 
 Missions persist across multiple runs and workflow executions; they are visible on the cockpit’s Mission Board.  When a mission is marked complete, all linked issues and PRs are closed (subject to human approval) and the mission may be archived.
+
+### Triggers
+
+Each mission workflow may declare `triggers` that tell the runtime when to create a run.  Supported trigger types:
+
+* `manual` – the user starts the workflow from the cockpit.  This is the only trigger type required for v1.
+* `github_label` – a run starts when the named label is applied to an issue.  Field: `label` (e.g. `type:feature`).
+* `github_comment` – a run starts when an issue comment matches a command pattern.  Field: `command` (e.g. `/agent start feature-prd`).
+* `scheduled` – a run starts on a cron schedule.  Field: `cron` (e.g. `"0 9 * * *"`).
+* `post_merge` – a run starts when a pull request merges into the named branch.  Field: `branch` (e.g. `main`).
+
+Example:
+
+```yaml
+triggers:
+  - type: github_label
+    label: type:feature
+```
+
+If no triggers are declared, the workflow can only be started manually.  The runtime must prevent duplicate concurrent runs for the same issue and workflow unless explicitly requested (see RuntimeSpec §5.1).
 
 ### Workflows
 
 Workflows define reusable sequences of steps to achieve a concrete outcome, such as implementing a feature or fixing a bug.  A workflow definition must include:
 
-* `id` – unique within the repository (e.g. `feature-development`).
+* `id` – unique within the repository (e.g. `feature-prd`).
 * `title` – human‑friendly name.
 * `description` – optional narrative describing the purpose and expected outcome.
 * `capabilities` – list of capabilities that any run of this workflow may request.  This must be a subset of the mission’s `permissions`.
 * `steps` – ordered list of `WorkflowStep` entries.  Steps are executed sequentially unless the runtime determines that some may run concurrently (e.g. independent tasks).
 * `version` – optional version string for compatibility.
 
-Workflow definitions may be stored globally (e.g. `./agent/workflows/feature-development.yaml`) and reused across missions by referencing their `id`.  Inline workflows allow mission‑specific customisation without polluting the global library.
+Workflow definitions may be stored globally (e.g. `.agent/workflows/feature-prd.yaml`) and reused across missions by referencing their `id`.  Inline workflows allow mission‑specific customisation without polluting the global library.
 
 ### Workflow Steps and Tasks
 
@@ -119,10 +150,45 @@ Each `WorkflowStep` specifies a task to be executed within a run.  A step includ
   - `apply_fixes` – iterate on failed CI results or code review feedback.
 * `description` – optional textual explanation for human readers.
 * `agent` – the type of agent responsible (e.g. `prd-interviewer`, `tdd-developer`, `reviewer`).  The runtime uses this to choose capabilities and model routes.
+* `prompt` – optional prompt id from the Prompt Library (see `07-PromptLibrarySpec.md`).  Each task template declares a default prompt; a step may override that default here.
+* `context` – optional context profile controlling how the runtime assembles model input for this step (see Context Profiles).
 * `outputs` – optional list of named outputs (e.g. `prd_file`, `issues`, `pull_request_url`) that subsequent steps can consume.
-* `hitl` – boolean indicating whether this step requires human approval to proceed.  When `true`, execution halts after this step and the run enters a `waiting_for_human` state until the cockpit records an answer.
+* `hitl` – optional human-in-the-loop marker.  Two kinds exist and they behave differently:
+  - `question` – the step asks one or more structured questions (written as `agentspec:question` comments).  The run enters `waiting_for_human` until every open question has a valid answer, then the step continues.  A grilling step may ask several rounds of questions before it completes.
+  - `approval` – execution halts *after* the step completes and the run enters `waiting_for_human` until the human approves or rejects the step's output in the cockpit.  Approval resumes the run; rejection blocks it with the human's feedback attached.
 
-Task definitions themselves are not embedded in AgentSpec.  They are part of the runtime’s library and may be updated without changing mission definitions.  Each task template declares its required capabilities, default agent type, and whether it supports HITL.
+Task definitions themselves are not embedded in AgentSpec.  They are part of the runtime’s library and may be updated without changing mission definitions.  Each task template declares its required capabilities, default agent type, default prompt id, and whether it supports HITL.
+
+### Context Profiles
+
+A context profile tells the runtime how to assemble model input for a step.  Fields:
+
+* `budget` – `small`, `medium` or `large`.  A rough size class; the runtime maps each class to concrete token counts per model in `models.yaml`.
+* `strategy` – `focused` (only explicitly linked artefacts and directly relevant files) or `broad` (may also include repo maps, summaries and adjacent files).
+* `required_sources` – named sources that must be present in the prompt, e.g. `issue`, `comments`, `answers`, `prd`, `gamespec_excerpt`, `relevant_files`, `ci_logs`.  If a required source cannot fit within budget, the run blocks with a context-overflow item rather than silently dropping the source.
+* `max_files` – hard cap on the number of source files included.
+* `max_tokens` – hard cap on estimated prompt size, regardless of the selected model's budget.
+
+Example:
+
+```yaml
+context:
+  budget: medium
+  strategy: focused
+  required_sources:
+    - issue
+    - prd
+    - gamespec_excerpt
+    - relevant_files
+  max_files: 6
+  max_tokens: 12000
+```
+
+If a step declares no profile, the task template's default profile applies.  The step's profile takes precedence over any `assumptions` declared in prompt frontmatter (see `07-PromptLibrarySpec.md`); the Prompt Budgeter (RuntimeSpec §5.10) makes the final fit decision.
+
+### Sequencing and Fan-Out
+
+Workflow steps execute sequentially.  AgentSpec v1 deliberately has **no iteration or fan-out construct**.  A workflow that produces multiple work items — for example `decompose`, which creates child issues — *ends* after creating them.  Each child issue then starts its own run of another workflow through that workflow's triggers (typically a `github_label` trigger on `state:ready-for-work`).  This keeps every run small, restartable, and traceable to exactly one GitHub object.  A `for_each` construct may be added in a future version (see Extension Points).
 
 ### Agents
 
@@ -151,7 +217,7 @@ Capabilities are strings representing permissions.  The built‑in capability gr
 
 * **read** – read files in the repository; read Git history, issues, PRs, comments; read build logs.
 * **edit** – modify files, create new files, delete files, run formatters and organise imports.
-* **git** – create branches, commit changes, push branches, create pull requests, update pull request descriptions, add or remove labels and comments.  Does *not* include merging to `main` or other restricted actions.
+* **git** – create branches, commit changes, push branches, create issues, create pull requests, update pull request descriptions, add or remove labels and comments.  Does *not* include merging to `main` or other restricted actions.
 * **build** – run the standard build and test commands defined by the ProjectSpec (e.g. `cargo test`, `cargo clippy`, `wasm build`).
 * **browser** – launch a headless browser to perform UI automation, capture screenshots or run end‑to‑end tests.
 * **asset** – run asset pipeline tools such as GLTF conversion or texture optimisation.
@@ -165,7 +231,7 @@ AgentSpec does not bind a task to a specific language model.  Instead, the runti
 
 ### HITL Integration
 
-A step with `hitl: true` signals that the run must pause after completing the step and wait for human input.  The agent writes a clarifying question to a GitHub comment, using a structured block:
+A step with `hitl: question` writes one or more clarifying questions as GitHub comments and pauses the run until each has a valid answer; a step with `hitl: approval` pauses after the step completes until the human approves or rejects its output in the cockpit (see Workflow Steps and Tasks).  A question uses a structured block:
 
 ```
 <!-- agentspec:question
@@ -196,6 +262,8 @@ A
 
 The runtime monitors issue comments for `agentspec:answer` blocks keyed by `question`.  Once an answer is detected, the run resumes.  The answer becomes part of the mission’s durable state and is used to update GameSpec if necessary.
 
+Question ids follow the scheme `q-<issue-number>-<sequence>`, where `<sequence>` is per-issue and zero-padded to three digits (e.g. `q-42-001`, `q-42-002`).  The first non-empty line of an answer body must begin with the chosen option letter, or with `custom:` followed by a free-form answer.  Any text after the first line is treated as elaboration and included in run context.  Answer validation and authorisation rules (who may answer, malformed answers, duplicates) are defined in RuntimeSpec §5.12.
+
 ### State Machine
 
 Each run transitions through a lifecycle defined by a finite state machine.  The high‑level states are:
@@ -207,6 +275,7 @@ Each run transitions through a lifecycle defined by a finite state machine.  The
 | `waiting_for_human`| A HITL question has been asked and execution is paused. |
 | `blocked`          | Execution cannot continue due to external factors (e.g. CI failure outside of agent control). |
 | `failed`           | The run encountered an unrecoverable error. |
+| `cancelled`        | The run was cancelled by the user before completion. |
 | `completed`        | All steps finished successfully. |
 
 Steps themselves may have sub‑states (e.g. `planning`, `executing`, `verifying`), but these are runtime details and not exposed in AgentSpec.  The runtime writes a summary comment on the relevant issue or pull request at the end of each step, including the new state and any artefacts produced.
@@ -215,13 +284,13 @@ Steps themselves may have sub‑states (e.g. `planning`, `executing`, `verifying
 
 ### Mission Lifecycle
 
-Missions are created by committing an AgentSpec file into the repository (e.g. `./agent/mission-fleet-sensors.yaml`) and linking it to a user story or feature request in GitHub.  Upon activation, the runtime loads the mission’s workflows and waits for triggers.  A trigger can be manual (a user clicks “Start Workflow” in the cockpit), based on labels (e.g. adding `type:feature-request` to an issue), or scheduled (e.g. weekly research tasks).
+Missions are created by committing an AgentSpec file into the repository (e.g. `.agent/workflows/mission-fleet-sensors.yaml`) and linking it to a user story or feature request in GitHub.  Upon activation, the runtime loads the mission’s workflows and waits for triggers.  A trigger can be manual (a user clicks “Start Workflow” in the cockpit), based on labels (e.g. adding `type:feature` to an issue), or scheduled (e.g. weekly research tasks).
 
 When a mission’s last workflow completes and all linked tasks are closed, the mission enters a `done` state.  The cockpit can archive the mission, hiding it from the mission board.  Missions may be reopened if further work is required.
 
 ### Workflow and Run Lifecycle
 
-When a trigger fires, the runtime creates a run.  It assigns a unique run identifier (e.g. `run-2026-07-01-004`) and records the run’s initial state (`pending`) in a hidden comment on the associated issue.  The runtime then executes steps in order, subject to capability constraints:
+When a trigger fires, the runtime creates a run.  It assigns a unique run identifier (e.g. `run-2026-07-01-004`) and records the run’s initial state (`pending`) in a structured metadata comment on the associated issue (an HTML-comment block — invisible when the comment is rendered, but present in the raw Markdown).  The runtime then executes steps in order, subject to capability constraints:
 
 1. **Context assembly.** The runtime gathers context from the relevant issue or PR, PRDs, GameSpec, the Repository Index and any linked artefacts.  It applies prompt templates associated with the agent type and task to build the LLM prompt.
 2. **Agent invocation.** The model router selects a model and executes the agent.  Output is captured as plain text, structured JSON or code diff depending on the task.
@@ -248,7 +317,7 @@ If verification fails (e.g. tests do not pass), the runtime may retry using a fa
 
 AgentSpec assumes GitHub is the canonical store for durable state.  The following mappings apply:
 
-* **Issues.** Each feature request, bug report or research task corresponds to a GitHub issue.  Mission and workflow identifiers may be recorded in hidden comments on the issue.  Labels indicate type (`type:feature-request`, `type:bug`) and state (`state:needs-grilling`, `state:prd-draft`, etc.).
+* **Issues.** Each feature request, bug report or research task corresponds to a GitHub issue.  Mission and workflow identifiers may be recorded in structured metadata blocks inside issue comments.  Labels indicate type (`type:feature`, `type:bug`) and state (`state:needs-grilling`, `state:prd-draft`, etc.).  The canonical label set is defined in `06-RepositorySpec.md`.
 * **Pull requests.** Implementation work is delivered via PRs on agent branches.  PR descriptions must include a structured block recording the run identifier, workflow, agent and verification status.  PRs are marked as ready for human review when CI passes and the workflow reaches its final step.
 * **Labels.** Workflows and tasks map to labels.  For example, when a run is in the “grill” step, the issue might carry `state:needs-grilling`.  When a PRD is drafted, the issue receives `state:prd-draft`.  These labels drive triggers and aid cockpit filtering.
 * **Comments.** Agents write clarifying questions, answers, run summaries and step results in comments.  Structured metadata blocks (e.g. `agentspec:question`, `agentspec:answer`, `agentspec:run`, `agentspec:pr`) enable the runtime to parse and update state.
@@ -269,46 +338,72 @@ missions:
     design_links:
       - wikilink:GameSpec/Systems/Sensors.md
     workflows:
-      - id: feat-sensor-feature
-        workflow: feature-development
+      - id: sensor-prd
+        workflow: feature-prd
+        triggers:
+          - type: github_label
+            label: type:feature
+      - id: sensor-implementation
+        workflow: issue-implementation
+        triggers:
+          - type: github_label
+            label: state:ready-for-work
         inputs:
-          issue_label: type:feature-request
           output_branch_prefix: agent
-      - id: bug-sensor-fix
+      - id: sensor-bug-fix
         workflow: bug-fix
+        triggers:
+          - type: github_label
+            label: type:bug
         inputs:
-          issue_label: type:bug
           output_branch_prefix: agent
 ```
 
-### Workflow Definition (Feature Development)
+### Workflow Definitions (Feature PRD and Issue Implementation)
+
+Feature development is deliberately split into two workflows.  The first turns a feature request into an accepted PRD and child issues; each child issue then triggers its own run of the second (see Sequencing and Fan-Out).
 
 ```yaml
-id: feature-development
-title: Feature Development Workflow
+id: feature-prd
+title: Feature PRD Workflow
 description: |
-  Standard process for implementing a new feature requested in a GitHub issue.
-capabilities: [read, edit, git, build]
+  Turn a feature request issue into an accepted PRD and small implementation issues.
+capabilities: [read, edit, git]
 steps:
   - id: grill
     task: grill
     description: Ask clarifying questions about the feature request.
     agent: prd-interviewer
     outputs: [answers]
-    hitl: true
+    hitl: question
   - id: prd
     task: write_prd
     description: Draft a product requirements document based on the issue and answers.
     agent: prd-writer
     outputs: [prd_file]
+    hitl: approval
   - id: decompose
     task: decompose
-    description: Break the PRD into smaller issues and tests.
+    description: Break the accepted PRD into small implementation issues labelled state:ready-for-work.
     agent: issue-decomposer
     outputs: [child_issues]
+```
+
+```yaml
+id: issue-implementation
+title: Issue Implementation Workflow
+description: |
+  Implement a single small issue in an isolated worktree and open a PR for human review.
+capabilities: [read, edit, git, build]
+steps:
+  - id: test
+    task: write_test
+    description: Write a failing test capturing the issue's acceptance criteria.
+    agent: tdd-developer
+    outputs: [test_files]
   - id: code
     task: implement
-    description: Write code to pass the newly created tests.
+    description: Write code to make the failing test pass.
     agent: tdd-developer
     outputs: [branch]
   - id: ci
@@ -323,24 +418,20 @@ steps:
     outputs: [pull_request_url]
   - id: review
     task: review
-    description: Perform static analysis and automated code review.
+    description: Perform static analysis and automated code review, then hand off to the human.
     agent: reviewer
     outputs: [review_notes]
-    hitl: true
-  - id: merge
-    task: recommend_merge
-    description: Recommend merging the PR if CI passes and review is satisfied.
-    agent: merger
-    outputs: []
-    hitl: true
+    hitl: approval
 ```
+
+There is no merge step: agents may not merge.  The workflow's terminal state is a PR awaiting human review; merging is a human action performed in the cockpit or directly on GitHub.
 
 ### Clarifying Question and Answer
 
 ```markdown
 <!-- agentspec:question
-id: q-007
-workflow: feature-development
+id: q-42-002
+workflow: feature-prd
 run_id: run-2026-07-15-002
 step_id: grill
 -->
@@ -358,10 +449,10 @@ Human responds via cockpit:
 
 ```markdown
 <!-- agentspec:answer
-question: q-007
+question: q-42-002
 -->
 
-A
+A. Always visible as fuzzy blips
 ```
 
 ### Pull Request Structured Block
@@ -369,7 +460,7 @@ A
 ```markdown
 <!-- agentspec:pr
 run_id: run-2026-07-15-002
-workflow: feature-development
+workflow: issue-implementation
 step: pr
 agent: pr-opener
 verification:
@@ -386,7 +477,8 @@ This pull request implements the radar contact visibility feature based on the P
 
 * **Unique identifiers.** `id` fields for missions, workflows and steps must be unique within their scope.  Runs are automatically assigned unique identifiers by the runtime.
 * **Allowed capabilities.** Missions may only include capabilities from the set defined by the runtime or declared as custom.  Workflows must not request capabilities not granted by the mission.
-* **Required fields.** `spec_version`, `missions.id`, `missions.title`, `workflows.id` and `steps.id` are mandatory.  Missing required fields result in a validation error.
+* **Required fields.** `spec_version` (once, at document level), `missions.id`, `missions.title`, `workflows.id` and `steps.id` are mandatory.  Missing required fields result in a validation error.
+* **HITL values.** `hitl`, when present, must be `question` or `approval`.  Steps whose task template does not support HITL must not declare it.
 * **YAML type safety.** All fields must be scalar strings, arrays or objects.  Anchors and aliases are discouraged to maintain portability.
 * **Versioning.** `spec_version` must follow semantic versioning (`MAJOR.MINOR.PATCH`).  The runtime may reject documents with unsupported major versions.
 * **Security.** Tasks marked as `dangerous` must not be present unless the mission explicitly grants the `dangerous` capability and the cockpit confirms the action.
@@ -398,7 +490,7 @@ AgentSpec is designed to evolve.  Extensions may include:
 * **Custom capabilities.** Projects may define domain‑specific capabilities (e.g. `database`, `cloud-deploy`).  These must be implemented in the runtime and declared in missions before use.
 * **New task types.** The runtime’s task library can grow.  New tasks should be documented and may require runtime updates.  Existing workflows may reference new tasks in future versions.
 * **Hooks.** Missions or workflows can define hooks that run custom scripts or call out to other services.  Hooks must declare which capabilities they require.
-* **Conditional steps.** Future versions may introduce conditional execution (e.g. `if`, `switch`) to allow workflows to adapt based on run context.
+* **Conditional steps and iteration.** Future versions may introduce conditional execution (e.g. `if`, `switch`) and fan-out (`for_each`) so a single run can iterate over outputs such as child issues.  In v1, fan-out is modelled as separate runs triggered per issue (see Sequencing and Fan-Out).
 * **Parallelism hints.** Steps may include metadata to indicate that certain tasks can run concurrently.
 
 ## Future Work
@@ -413,4 +505,4 @@ AgentSpec v1.0.0 focuses on capturing the essentials for Project Phoenix.  Futur
 
 ---
 
-This specification provides a comprehensive definition of AgentSpec and its role within the broader agentic engineering system.  It aligns with the engineering vision that GitHub is the source of truth【324830502334722†screenshot】, agents are stateless, missions organise work hierarchically, capabilities constrain actions, and human input is always part of the loop.  Adherence to these principles ensures that the runtime can interpret AgentSpec documents consistently and that the resulting workflows remain auditable, reproducible and portable across model providers and projects.
+This specification provides a comprehensive definition of AgentSpec and its role within the broader agentic engineering system.  It aligns with the engineering vision that GitHub is the source of truth, agents are stateless, missions organise work hierarchically, capabilities constrain actions, and human input is always part of the loop.  Adherence to these principles ensures that the runtime can interpret AgentSpec documents consistently and that the resulting workflows remain auditable, reproducible and portable across model providers and projects.
