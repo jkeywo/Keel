@@ -34,7 +34,11 @@ export function cockpitPage(): string {
   .state.cancelled { background: #4a5261; }
   label { display: block; margin: .3rem 0; cursor: pointer; }
   input[type=text] { background: #14181f; color: #d7dce3; border: 1px solid #2a3341; border-radius: 6px; padding: .3rem .5rem; width: 60%; }
-  pre { white-space: pre-wrap; font-size: .8rem; color: #9aa7b8; }
+  pre { white-space: pre-wrap; font-size: .8rem; color: #9aa7b8; margin: .3rem 0; }
+  tr.run-row { cursor: pointer; }
+  tr.run-row:hover td { background: #202836; }
+  td.detail { background: #171c25; }
+  .error { color: #e08087; font-size: .85rem; margin: .3rem 0; }
 </style>
 </head>
 <body>
@@ -47,6 +51,7 @@ export function cockpitPage(): string {
 <script>
 var state = { missions: [], runs: [], questions: [], approvals: [] };
 var lastMissionsKey = null, lastInboxKey = null, lastRunsKey = null;
+var expandedRuns = {};
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -88,6 +93,11 @@ function resolveApproval(id, approved) {
 
 function cancelRun(id) {
   if (confirm('Cancel run ' + id + '?')) api('/api/runs/' + encodeURIComponent(id) + '/cancel');
+}
+
+function toggleRun(id) {
+  if (expandedRuns[id]) delete expandedRuns[id]; else expandedRuns[id] = true;
+  renderRuns();
 }
 
 function renderMissions() {
@@ -151,11 +161,22 @@ function renderRuns() {
       state.runs.map(function (r) {
         var last = r.log && r.log.length ? r.log[r.log.length - 1] : '';
         var cancellable = ['pending','running','waiting_for_human','blocked'].indexOf(r.state) >= 0;
-        return '<tr><td>' + esc(r.runId) + '</td><td>' + esc(r.workflow) + '</td><td>#' + r.issue + '</td>' +
+        var row = '<tr class="run-row" onclick="toggleRun(\\'' + esc(r.runId) + '\\')"><td>' + esc(r.runId) + '</td><td>' + esc(r.workflow) + '</td><td>#' + r.issue + '</td>' +
           '<td><span class="state ' + esc(r.state) + '">' + esc(r.state) + '</span></td>' +
           '<td>' + esc(r.currentStep || '—') + '</td><td class="muted">' + esc(last.slice(25)) + '</td>' +
-          '<td>' + (cancellable ? '<button class="secondary" onclick="cancelRun(\\'' + esc(r.runId) + '\\')">Cancel</button>' : '') + '</td></tr>';
-      }).join('') + '</table>'
+          '<td>' + (cancellable ? '<button class="secondary" onclick="event.stopPropagation();cancelRun(\\'' + esc(r.runId) + '\\')">Cancel</button>' : '') + '</td></tr>';
+        if (expandedRuns[r.runId]) {
+          var detail = '';
+          if (r.error) detail += '<div class="error">error: ' + esc(r.error) + '</div>';
+          if (r.outputs && Object.keys(r.outputs).length) {
+            detail += '<pre>outputs: ' + esc(JSON.stringify(r.outputs, null, 2)) + '</pre>';
+          }
+          detail += '<pre>' + (esc((r.log || []).join('\\n')) || '<span class="muted">no log lines yet</span>') + '</pre>';
+          row += '<tr><td class="detail" colspan="7">' + detail + '</td></tr>';
+        }
+        return row;
+      }).join('') + '</table>' +
+      '<div class="muted" style="margin-top:.4rem">Click a run to show or hide its log and outputs.</div>'
     : '<div class="muted">No runs yet.</div>';
 }
 
