@@ -6,6 +6,10 @@ import { resolveWorkflow } from './agentspec.js';
 import { PromptLibrary, fillPrompt } from './prompts.js';
 import { ModelRouter, estimateTokens } from './models.js';
 import type { GitHubAdapter } from './github.js';
+import type { WorktreeManager } from './worktrees.js';
+import type { AgentExecutor } from './agents.js';
+import { loadProjectSpec } from './projectspec.js';
+import { runShell } from './cli.js';
 
 export interface RuntimeOptions {
   spec: LoadedSpec;
@@ -14,8 +18,15 @@ export interface RuntimeOptions {
   github: GitHubAdapter;
   repoPath: string;
   stateDir: string;
+  /** Required for the agent_implement / run_ci / open_pr tasks. */
+  worktrees?: WorktreeManager;
+  agents?: AgentExecutor;
   logger?: (msg: string) => void;
 }
+
+/** Thrown when a step cannot proceed but human intervention may fix it
+ * (e.g. failing tests). The run goes to `blocked`, not `failed`. */
+export class RunBlockedError extends Error {}
 
 interface StepResult {
   waiting?: boolean;
@@ -99,9 +110,10 @@ export class Runtime {
       try {
         result = await this.executeStep(run, step);
       } catch (err) {
-        run.state = 'failed';
+        const blocked = err instanceof RunBlockedError;
+        run.state = blocked ? 'blocked' : 'failed';
         run.error = err instanceof Error ? err.message : String(err);
-        this.log(run, `step ${step.id} failed: ${run.error}`);
+        this.log(run, `step ${step.id} ${blocked ? 'blocked' : 'failed'}: ${run.error}`);
         this.touch(run);
         this.saveState();
         break;
@@ -220,6 +232,12 @@ export class Runtime {
         return this.taskWritePrd(run, step);
       case 'decompose':
         return this.taskDecompose(run, step);
+      case 'agent_implement':
+        return this.taskAgentImplement(run);
+      case 'run_ci':
+        return this.taskRunCi(run);
+      case 'open_pr':
+        return this.taskOpenPr(run);
       default:
         throw new Error(`unknown task type "${step.task}"`);
     }
@@ -322,6 +340,90 @@ export class Runtime {
       `<!-- agentspec:run\nid: ${run.runId}\nworkflow: ${run.workflow}\nstep: ${step.id}\nstate: completed\n-->\n\nDecomposed ${prdFile} into ${created.length} implementation issue(s):\n\n${list}`,
     );
     return { outputs: { child_issues: created } };
+  }
+
+  private async taskAgentImplement(run: RunRecord): Promise<StepResult> {
+    if (!this.o.worktrees || !this.o.agents) {
+      throw new Error('agentic executor is not configured (worktrees/agents missing from RuntimeOptions)');
+    }
+    const issue = await this.o.github.getIssue(run.issue);
+    const slug =
+      issue.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 30) || 'issue';
+    const wt = await this.o.worktrees.create(run.runId, run.issue, slug);
+    run.worktree = wt.path;
+    run.branch = wt.branch;
+    this.log(run, `worktree ${wt.path} on branch ${wt.branch}`);
+    await this.tryLabels(run, ['state:agent-working'], ['state:ready-for-work']);
+
+    // PRD link, if the decomposer recorded one in the issue body.
+    let prd = '';
+    const prdMatch = issue.body.match(/PRD:\s*(docs\/prds\/\S+\.md)/);
+    if (prdMatch) {
+      const prdPath = path.join(this.o.repoPath, prdMatch[1]);
+      if (fs.existsSync(prdPath)) prd = fs.readFileSync(prdPath, 'utf8');
+    }
+    const ps = loadProjectSpec(this.o.repoPath);
+    const prompt = buildImplementPrompt(issue.number, issue.title, issue.body, prd, ps?.test ?? [], run.runId);
+
+    const summary = await this.o.agents.implement(run.runId, wt.path, prompt);
+    this.log(run, `agent finished: ${summary.slice(0, 160).replace(/\s+/g, ' ')}`);
+
+    if (await this.o.worktrees.isDirty(wt.path)) {
+      await this.o.worktrees.commitAll(
+        wt.path,
+        `Agent changes for #${run.issue}\n\nAgentSpec-Run: ${run.runId}\nIssue: #${run.issue}`,
+      );
+      this.log(run, 'committed uncommitted agent changes');
+    }
+    const commits = await this.o.worktrees.commitsSince(wt.path, wt.baseCommit);
+    if (commits === 0) throw new Error('coding agent produced no commits');
+    this.log(run, `${commits} commit(s) on ${wt.branch}`);
+    return { outputs: { branch: wt.branch, worktree: wt.path, agent_summary: summary.slice(0, 500) } };
+  }
+
+  private async taskRunCi(run: RunRecord): Promise<StepResult> {
+    const wt = run.worktree ?? (run.outputs['worktree'] as string | undefined);
+    if (!wt) throw new Error('run_ci requires a worktree from agent_implement');
+    const ps = loadProjectSpec(this.o.repoPath);
+    const commands: string[] = [];
+    if (fs.existsSync(path.join(wt, 'package.json'))) commands.push('npm install');
+    commands.push(...(ps?.test ?? []));
+    if (!commands.length) throw new Error('projectspec.yaml defines no test commands');
+
+    for (const cmd of commands) {
+      this.log(run, `ci: ${cmd}`);
+      const r = await runShell(cmd, { cwd: wt, timeoutMs: 10 * 60_000 });
+      if (r.code !== 0) {
+        const tail = (r.stdout + '\n' + r.stderr).trim().split(/\r?\n/).slice(-25).join('\n');
+        // Test failures are actionable by a human; tool failures usually need setup.
+        throw new RunBlockedError(`CI failed on "${cmd}" (exit ${r.code}):\n${tail}`);
+      }
+    }
+    return { outputs: { ci_status: 'passed', ci_commands: commands } };
+  }
+
+  private async taskOpenPr(run: RunRecord): Promise<StepResult> {
+    if (!this.o.worktrees) throw new Error('open_pr requires the worktree manager');
+    const wt = run.worktree ?? (run.outputs['worktree'] as string | undefined);
+    const branch = run.branch ?? (run.outputs['branch'] as string | undefined);
+    if (!wt || !branch) throw new Error('open_pr requires branch/worktree from agent_implement');
+
+    await this.o.worktrees.push(wt, branch);
+    this.log(run, `pushed ${branch}`);
+
+    const issue = await this.o.github.getIssue(run.issue);
+    const ciCommands = (run.outputs['ci_commands'] as string[]) ?? [];
+    const verification = ciCommands.map((c) => `  ${c.replace(/[^a-z0-9]+/gi, '_')}: passed`).join('\n');
+    const body =
+      `<!-- agentspec:pr\nrun_id: ${run.runId}\nworkflow: ${run.workflow}\nstep: pr\nagent: coding-agent\n` +
+      `verification:\n${verification}\nrequires_human_review: true\n-->\n\n` +
+      `Implements #${run.issue} (${issue.title}).\n\n` +
+      `All configured checks passed in the isolated worktree. Please review and merge when satisfied.\n\n` +
+      `Closes #${run.issue}`;
+    const pr = await this.o.github.createPullRequest(`${issue.title}`, body, branch);
+    await this.tryLabels(run, ['state:pr-open'], ['state:agent-working']);
+    this.log(run, `opened PR #${pr.number}: ${pr.url}`);
+    return { outputs: { pull_request: pr.number, pr_url: pr.url } };
   }
 
   // ---- helpers ---------------------------------------------------------
@@ -461,6 +563,39 @@ export function parseJsonIssueArray(raw: string): { title: string; body: string 
     }
     return { title: it.title, body: it.body };
   });
+}
+
+function buildImplementPrompt(
+  issueNumber: number,
+  title: string,
+  body: string,
+  prd: string,
+  testCommands: string[],
+  runId: string,
+): string {
+  return [
+    `You are implementing GitHub issue #${issueNumber} in this repository checkout (an isolated git worktree on a dedicated branch).`,
+    '',
+    `## Issue: ${title}`,
+    '',
+    body,
+    prd ? `\n## Related PRD\n\n${prd}` : '',
+    '',
+    '## Rules',
+    '',
+    '- Work only inside this directory.',
+    '- Write a failing test first where practical, then make it pass.',
+    testCommands.length
+      ? `- Verify with the project's test commands before finishing: ${testCommands.join(' && ')}`
+      : '- Run any existing tests before finishing.',
+    '- Make small, focused commits. End every commit message with:',
+    '',
+    `  AgentSpec-Run: ${runId}`,
+    `  Issue: #${issueNumber}`,
+    '',
+    '- NEVER push, never touch branches other than the current one, never modify git config or CI workflow files.',
+    '- When done, reply with a short summary of what you changed and how you verified it.',
+  ].join('\n');
 }
 
 function questionComment(q: Question, run: RunRecord, step: WorkflowStep): string {

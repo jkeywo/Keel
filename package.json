@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "dry-run": "tsx src/index.ts --dry-run",
+    "agent:image": "docker build -t keel-agent -f docker/Dockerfile.agent docker",
     "test": "vitest run"
   },
   "dependencies": {

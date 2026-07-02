@@ -2,6 +2,19 @@
 # `skills` are model competencies (planner, coder, reviewer, summariser) —
 # distinct from capabilities, which are tool permissions.
 models:
+  # Subscription CLIs (vendor-supported headless interfaces; see Spec/00 §3.5).
+  # Unavailable (no binary / no auth / usage-limit cooldown) falls through to local.
+  subscription:claude-sonnet:
+    provider: claude_code
+    model: sonnet
+    unlimited: true
+    skills: [planner, reviewer, coder]
+
+  subscription:codex:
+    provider: codex_cli
+    unlimited: true
+    skills: [planner, coder]
+
   local:qwen-coder:
     provider: ollama
     model: qwen3.6-coder:latest
@@ -33,8 +46,9 @@ models:
     unlimited: true
     skills: [planner, coder, reviewer, summariser]
 
+# Subscription first for planning and review; local first for summarising.
 routing:
-  planner: [local:qwen-large, local:qwen-coder, mock:default]
-  coder: [local:qwen-coder, mock:default]
-  reviewer: [local:qwen-large, mock:default]
+  planner: [subscription:claude-sonnet, subscription:codex, local:qwen-large, local:qwen-coder, mock:default]
+  coder: [subscription:claude-sonnet, local:qwen-coder, mock:default]
+  reviewer: [subscription:claude-sonnet, local:qwen-large, mock:default]
   summariser: [local:llama3, local:qwen-coder, mock:default]

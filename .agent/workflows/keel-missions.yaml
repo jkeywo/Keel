@@ -5,9 +5,13 @@ missions:
     description: |
       Build Keel using Keel: run the feature-prd loop against this
       repository's own feature requests.
-    permissions: [read, edit, git]
+    permissions: [read, edit, git, build]
     workflows:
       - id: keel-feature-prd
         workflow: feature-prd
+        triggers:
+          - type: manual
+      - id: keel-issue-implementation
+        workflow: issue-implementation
         triggers:
           - type: manual

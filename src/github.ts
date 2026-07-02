@@ -13,6 +13,11 @@ export interface IssueComment {
   body: string;
 }
 
+export interface PullRequest {
+  number: number;
+  url: string;
+}
+
 export interface GitHubAdapter {
   readonly repo: string;
   getIssue(num: number): Promise<Issue>;
@@ -21,6 +26,7 @@ export interface GitHubAdapter {
   addLabels(num: number, labels: string[]): Promise<void>;
   removeLabel(num: number, label: string): Promise<void>;
   createIssue(title: string, body: string, labels: string[]): Promise<number>;
+  createPullRequest(title: string, body: string, head: string, base?: string): Promise<PullRequest>;
 }
 
 /** Real adapter: shells out to the authenticated `gh` CLI (Spec/04 §5.5). */
@@ -85,6 +91,15 @@ export class GhCliAdapter implements GitHubAdapter {
     );
     return (JSON.parse(out) as { number: number }).number;
   }
+
+  async createPullRequest(title: string, body: string, head: string, base = 'main'): Promise<PullRequest> {
+    const out = await this.gh(
+      ['api', `repos/${this.repo}/pulls`, '--method', 'POST', '--input', '-'],
+      JSON.stringify({ title, body, head, base }),
+    );
+    const d = JSON.parse(out) as { number: number; html_url: string };
+    return { number: d.number, url: d.html_url };
+  }
 }
 
 /** In-memory adapter for tests and --dry-run. */
@@ -92,6 +107,7 @@ export class MockGitHub implements GitHubAdapter {
   readonly repo = 'mock/repo';
   readonly issues = new Map<number, Issue>();
   readonly comments = new Map<number, IssueComment[]>();
+  readonly pullRequests: { number: number; title: string; body: string; head: string; base: string }[] = [];
   private nextIssue = 1;
 
   seedIssue(title: string, body: string, labels: string[] = []): number {
@@ -129,5 +145,11 @@ export class MockGitHub implements GitHubAdapter {
 
   async createIssue(title: string, body: string, labels: string[]): Promise<number> {
     return this.seedIssue(title, body, labels);
+  }
+
+  async createPullRequest(title: string, body: string, head: string, base = 'main'): Promise<PullRequest> {
+    const number = 100 + this.pullRequests.length;
+    this.pullRequests.push({ number, title, body, head, base });
+    return { number, url: `https://github.com/${this.repo}/pull/${number}` };
   }
 }

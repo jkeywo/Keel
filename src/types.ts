@@ -74,6 +74,8 @@ export interface RunRecord {
   stepIndex: number;
   answers: Record<string, string>;
   outputs: Record<string, unknown>;
+  worktree?: string;
+  branch?: string;
   log: string[];
   error?: string;
   createdAt: string;

@@ -10,6 +10,23 @@ export interface KeelConfig {
   port: number;
   ollamaUrl: string;
   dryRun: boolean;
+  claudeCode: {
+    enabled: boolean;
+    command: string;
+    /** Long-lived token from `claude setup-token`, used by the Docker agent. */
+    oauthToken?: string;
+  };
+  codex: {
+    enabled: boolean;
+    command: string;
+    authPath: string;
+  };
+  agent: {
+    /** docker = containerised coding agent; host = permission-allowlisted claude -p on the host. */
+    mode: 'docker' | 'host';
+    image: string;
+    prefer: ('claude_code' | 'codex')[];
+  };
 }
 
 /**
@@ -26,7 +43,18 @@ export function loadConfig(overrides: Partial<KeelConfig> = {}): KeelConfig {
   }
   const repos = (file.repositories ?? {}) as Record<string, { path?: string; github?: string }>;
   const keelRepo = repos.keel ?? {};
-  const providers = (file.providers ?? {}) as { ollama?: { url?: string } };
+  const providers = (file.providers ?? {}) as {
+    ollama?: { url?: string };
+    claude_code?: { enabled?: boolean; command?: string; oauth_token?: string };
+    codex?: { enabled?: boolean; command?: string; auth_path?: string };
+  };
+  const agent = (file.agent ?? {}) as {
+    mode?: 'docker' | 'host';
+    image?: string;
+    prefer?: ('claude_code' | 'codex')[];
+  };
+
+  const claudeToken = providers.claude_code?.oauth_token ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
   return {
     repoPath: overrides.repoPath ?? keelRepo.path ?? process.cwd(),
@@ -36,5 +64,22 @@ export function loadConfig(overrides: Partial<KeelConfig> = {}): KeelConfig {
     port: overrides.port ?? Number(process.env.KEEL_PORT ?? 4400),
     ollamaUrl: overrides.ollamaUrl ?? providers.ollama?.url ?? 'http://localhost:11434',
     dryRun: overrides.dryRun ?? false,
+    claudeCode: {
+      enabled: providers.claude_code?.enabled ?? true,
+      command: providers.claude_code?.command ?? 'claude',
+      oauthToken: claudeToken,
+    },
+    codex: {
+      enabled: providers.codex?.enabled ?? true,
+      command: providers.codex?.command ?? 'codex',
+      authPath: providers.codex?.auth_path ?? path.join(home, '.codex', 'auth.json'),
+    },
+    agent: {
+      // Docker needs a token the container can use; without one, fall back
+      // to host mode (permission-allowlisted, worktree cwd) with a warning.
+      mode: agent.mode ?? (claudeToken ? 'docker' : 'host'),
+      image: agent.image ?? 'keel-agent',
+      prefer: agent.prefer ?? ['claude_code', 'codex'],
+    },
   };
 }

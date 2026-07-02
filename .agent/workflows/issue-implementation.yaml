@@ -1,0 +1,25 @@
+id: issue-implementation
+title: Issue Implementation Workflow
+description: |
+  Implement a single small issue in an isolated worktree using a
+  subscription-backed coding agent (containerised Claude Code, Codex
+  fallback), verify with the project's test regime, and open a PR for
+  human review. Agents never merge and never touch main.
+capabilities: [read, edit, git, build]
+steps:
+  - id: implement
+    task: agent_implement
+    description: Delegate implementation to the coding agent in an isolated worktree.
+    agent: coding-agent
+    outputs: [branch, worktree]
+  - id: ci
+    task: run_ci
+    description: Run the project's test commands from projectspec.yaml against the worktree.
+    agent: ci-runner
+    outputs: [ci_status]
+  - id: pr
+    task: open_pr
+    description: Push the agent branch and open a pull request; approval means the human merges.
+    agent: pr-opener
+    outputs: [pull_request]
+    hitl: approval
