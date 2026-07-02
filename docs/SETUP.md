@@ -27,6 +27,50 @@ provider**, which returns canned output — the loop still works but the
 questions and PRDs are placeholders. Watch the console: if you see
 `model mock:default selected`, you're on canned output.
 
+## 1b. Subscription models (Claude Code / Codex)
+
+Keel routes **planner** and **reviewer** calls to subscription-backed CLIs
+first, falling back to local models automatically when the CLI is missing,
+unauthenticated, or has hit its usage limit:
+
+- **Claude Code** (`claude -p`, needs Claude Pro/Max): works out of the box
+  if you're logged in to Claude Code on this machine — nothing to configure.
+- **Codex** (`codex exec`, needs ChatGPT Plus/Pro):
+  `npm i -g @openai/codex` then `codex login`.
+
+These are vendor-supported headless interfaces covered by your subscription
+(Spec/00 §3.5) — no web-UI automation is involved.
+
+### The coding agent (issue-implementation workflow)
+
+The `issue-implementation` workflow hands a whole issue to Claude Code
+(Codex fallback) in an **isolated git worktree**, runs your
+`projectspec.yaml` test commands, and opens a PR. Two isolation modes:
+
+- **Host mode** (default when no token is configured): `claude -p` runs on
+  this machine with a permission allowlist (file edits + npm/git-commit
+  only), cwd pinned to the worktree. Good enough to start; less isolated.
+- **Docker mode** (recommended): the agent runs inside the `keel-agent`
+  container with only the worktree mounted. Set it up once:
+
+  ```powershell
+  npm run agent:image        # build the keel-agent Docker image
+  claude setup-token         # mint a long-lived subscription token
+  ```
+
+  Then add the token to `~/.agentspec/config.yaml`:
+
+  ```yaml
+  providers:
+    claude_code:
+      oauth_token: <token from claude setup-token>
+  agent:
+    mode: docker             # optional; docker is the default once a token exists
+  ```
+
+The agent never merges, never pushes to `main`, and only ever pushes its
+own `agent/<issue>-<slug>` branch.
+
 ## 2. Models
 
 `.agent/models.yaml` maps router entries to Ollama model tags. The defaults
@@ -136,6 +180,9 @@ file at all.
 | `run ... already active` when starting | A previous run for that issue/workflow is still open — cancel it in the Runs table first |
 | `answer must begin with an option letter` | Answers must start with `A`/`B`/... or `custom: your text` |
 | Want a clean slate | Stop the server, delete `~/.agentspec/keel/state.json`, restart |
+| Planner unexpectedly on local qwen | Subscription CLI hit its usage limit (15-min cooldown) or isn't authenticated — check the console for the routing reason |
+| `docker mode needs providers.claude_code.oauth_token` | Run `claude setup-token` and add it to `~/.agentspec/config.yaml`, or set `agent.mode: host` |
+| Implementation run `blocked` with "CI failed" | The agent's code didn't pass your projectspec test commands — read the log excerpt in the run detail, fix or cancel |
 
 ## 8. Safety notes
 

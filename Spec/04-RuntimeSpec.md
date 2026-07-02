@@ -540,6 +540,8 @@ fallbacks:
 Routing order should usually be:
 
 ```text
+automated subscription CLI (planning and review, when available)
+↓
 local automated
 ↓
 free automated gateway
@@ -547,7 +549,11 @@ free automated gateway
 manual subscription escalation
 ```
 
-Manual subscription models are not called automatically. The runtime creates a prompt pack and waits for the user to paste the result back into the cockpit.
+Subscription CLIs (Claude Code headless `claude -p`, Codex `codex exec`) are automated providers like any other: the router calls them directly, they run from an empty scratch directory with no tool grants (pure text generation), and on a usage-limit error the provider enters a cooldown so the router falls through to local models without human intervention. See `00-EngineeringVision.md` §3.5 for the amended decision.
+
+The same CLIs also power the coding agent for implementation workflows: run inside a container with only the run's worktree mounted, the container *is* the capability sandbox (§5.7), which is what makes permission bypass safe there.
+
+Manual subscription models (web/desktop apps) are never called automatically. The runtime creates a prompt pack and waits for the user to paste the result back into the cockpit.
 
 ---
 

@@ -244,17 +244,20 @@ The cockpit renders these as forms, not as raw Markdown.
 
 ---
 
-### 3.5 Subscriptions are expert escalation, not the default automation channel
+### 3.5 Subscription models: automated through supported CLIs, manual escalation otherwise
 
-Subscription products such as ChatGPT Plus, Claude Pro/Max, and Gemini subscriptions are valuable for hard reasoning, but they are not reliable automation backends for a local orchestrator unless a provider supplies a supported automation interface.
+Subscription products such as ChatGPT Plus, Claude Pro/Max, and Gemini subscriptions are valuable for hard reasoning, but they are only reliable automation backends where the provider supplies a supported automation interface.
+
+**Amended decision:** such interfaces now exist and are covered by the subscriptions — Claude Code's headless print mode (`claude -p`) for Claude Pro/Max, and the Codex CLI (`codex exec`) for ChatGPT Plus/Pro. These are vendor-supported CLIs, not web-UI automation, so the original constraint is satisfied. Automating the web or desktop apps themselves remains out of bounds.
 
 The system therefore separates:
 
 | Mode | Examples | Use |
 |---|---|---|
-| Automated local | Ollama, llama.cpp, local Qwen/DeepSeek/GLM models | Default agent loops. |
+| Automated subscription CLI | Claude Code headless (`claude -p`), Codex CLI (`codex exec`) | Preferred tier for planning and review; also powers the containerised coding agent. Usage-limited: on quota exhaustion the router falls through automatically. |
+| Automated local | Ollama, llama.cpp, local Qwen/DeepSeek/GLM models | Default fallback loops and summarisation. |
 | Automated free gateway | OpenRouter free models, free provider tiers | Overflow and fallback. |
-| Manual subscription escalation | ChatGPT, Claude, Gemini web/desktop apps | Difficult planning, debugging, architecture, or design review. |
+| Manual subscription escalation | ChatGPT, Claude, Gemini web/desktop apps | Last resort when the CLIs and local models cannot handle the task. |
 
 The cockpit should support an **Escalate to Subscription Model** workflow.
 

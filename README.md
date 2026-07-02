@@ -5,25 +5,35 @@ against a GitHub repository, keeps GitHub as the canonical project database,
 and asks the human operator instead of guessing. It is the implementation of
 the **Phoenix Agentic Engineering Suite** specified in [`Spec/`](Spec/MANIFEST.md).
 
-## Current state — Slice 1 walking skeleton
+## Current state — Slices 1 & 3
 
-One workflow works end to end (`feature-prd`):
+Two workflows work end to end:
 
 ```text
-feature issue → grill (structured questions) → PRD draft (human approval)
-             → decomposition into ready-for-work child issues
+feature-prd:           feature issue → grill → PRD (human approval)
+                       → decomposition into ready-for-work child issues
+
+issue-implementation:  small issue → coding agent in an isolated worktree
+                       → projectspec test regime → PR for human review
 ```
 
 - **Runtime**: AgentSpec loading + validation, run state machine,
-  HITL question/answer and approval gates, model routing (Ollama with
-  budget checks, mock fallback), local state cache under `~/.agentspec/keel/`.
-- **Cockpit**: Mission Board, Inbox (questions + approvals), Runs table at
-  `http://localhost:4400`.
-- **GitHub**: comments, labels, and issue creation via the authenticated
+  HITL question/answer and approval gates, local state cache under
+  `~/.agentspec/keel/`.
+- **Models**: subscription-first routing for planning/review via headless
+  Claude Code (`claude -p`) and Codex (`codex exec`), falling back to local
+  Ollama models on usage limits, with a mock provider as the last resort.
+- **Coding agent**: Claude Code (Codex fallback) implements issues in git
+  worktrees under `~/.agentspec/keel/worktrees/` — Dockerised (`keel-agent`
+  image) or host-mode with a permission allowlist. Agents never merge and
+  never touch `main`.
+- **Cockpit**: Mission Board, Inbox (questions + approvals), Runs table
+  with expandable run detail at `http://localhost:4400`.
+- **GitHub**: comments, labels, issues, and PRs via the authenticated
   `gh` CLI, with `agentspec:*` metadata blocks per the spec.
 
-Not yet built: worktrees, code-writing workflows, CI integration,
-label-based triggers, context indexing. See
+Not yet built: label-based triggers (issue #3), context indexing, Repo
+Health / Model Monitor screens. See
 [`Spec/08-ImplementationRoadmap.md`](Spec/08-ImplementationRoadmap.md).
 
 ## Quickstart
