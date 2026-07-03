@@ -11,6 +11,7 @@ your first grill question in the browser.
 | **Node.js 20+** | Runs the runtime and cockpit | `node --version` |
 | **GitHub CLI (`gh`), authenticated** | All GitHub reads/writes go through it | `gh auth status` |
 | **Ollama** (recommended) | Local models for grilling, PRD writing, decomposition | `ollama list` |
+| **Docker Desktop** (optional) | Container isolation for the coding agent | `docker info` |
 | **git** | You already have this if you cloned the repo | `git --version` |
 
 Setup commands if anything is missing:
@@ -50,8 +51,14 @@ The `issue-implementation` workflow hands a whole issue to Claude Code
 - **Host mode** (default when no token is configured): `claude -p` runs on
   this machine with a permission allowlist (file edits + npm/git-commit
   only), cwd pinned to the worktree. Good enough to start; less isolated.
+  Known issue [#11](https://github.com/jkeywo/Keel/issues/11): the git
+  allowlist doesn't currently take effect, so the agent's changes are
+  committed by the runtime's salvage commit instead of the agent's own
+  commits — runs still complete correctly.
 - **Docker mode** (recommended): the agent runs inside the `keel-agent`
-  container with only the worktree mounted. Set it up once:
+  container with only the worktree mounted. Docker Desktop must be running
+  when the workflow starts (see the Docker troubleshooting section below if
+  it crashes at startup). Set it up once:
 
   ```powershell
   npm run agent:image        # build the keel-agent Docker image
@@ -160,6 +167,30 @@ file at all.
    git add docs/prds/ ; git commit -m "Add PRD NNN" ; git push
    ```
 
+## 5b. Implementing an issue
+
+Once a small issue carries `state:ready-for-work` (the decomposer labels
+its child issues automatically):
+
+1. In the cockpit, click **Start issue-implementation** and enter the issue
+   number.
+2. The coding agent works in a fresh worktree under
+   `~/.agentspec/keel/worktrees/<run-id>` on branch `agent/<issue>-<slug>`.
+   Expect 5–15 minutes; the run detail shows progress.
+3. The runtime then runs your `projectspec.yaml` test commands against the
+   worktree. A failure **blocks** the run with a log excerpt in the run
+   detail — nothing is pushed.
+4. On success the branch is pushed and a PR opens with `agentspec:pr`
+   metadata and `Closes #<issue>`; the parent issue flips to
+   `state:pr-open`, and an approval item appears in the Inbox.
+5. **You merge on GitHub** (that's what the approval means — agents never
+   merge). Merging closes the issue via the `Closes` reference. Afterwards
+   you can delete the worktree:
+
+   ```powershell
+   git worktree remove "$env:USERPROFILE\.agentspec\keel\worktrees\<run-id>"
+   ```
+
 ## 6. Where things live
 
 - **Durable state** — issues, comments, labels, PRDs: GitHub. Always
@@ -183,11 +214,47 @@ file at all.
 | Planner unexpectedly on local qwen | Subscription CLI hit its usage limit (15-min cooldown) or isn't authenticated — check the console for the routing reason |
 | `docker mode needs providers.claude_code.oauth_token` | Run `claude setup-token` and add it to `~/.agentspec/config.yaml`, or set `agent.mode: host` |
 | Implementation run `blocked` with "CI failed" | The agent's code didn't pass your projectspec test commands — read the log excerpt in the run detail, fix or cancel |
+| Docker Desktop crashes at startup | See the section below |
+
+### Docker Desktop crashes at startup ("An unexpected error occurred")
+
+If Docker Desktop shows an error dialog on launch containing:
+
+```text
+starting services: initializing Inference manager: listening on
+unix://...\AppData\Local\Docker\run\dockerInference: remove ...:
+The file cannot be accessed by the system.
+```
+
+(or the same with `docker-secrets-engine\engine.sock`), Windows has got
+into a state where **unix-socket files can't be deleted** — Docker's
+startup removes old sockets before rebinding, so it crashes on the
+leftovers from its previous session, every time.
+
+Workaround (quit Docker Desktop first, then relaunch it after):
+
+```powershell
+ren "$env:LOCALAPPDATA\Docker\run" "run-broken-$(Get-Random)"
+ren "$env:LOCALAPPDATA\docker-secrets-engine" "dse-broken-$(Get-Random)"
+```
+
+The **durable fix is a Windows reboot**, which clears the stuck
+socket-deletion state. After rebooting, delete the debris:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA","$env:LOCALAPPDATA\Docker" -Directory -Filter "*broken*" | Remove-Item -Recurse -Force
+```
+
+(Disabling Docker AI in settings does *not* prevent the crash — the
+Inference listener starts regardless.)
 
 ## 8. Safety notes
 
-- **Real mode acts as you on GitHub** — comments, labels, and new issues
-  appear under your account (with `agentspec:*` metadata marking them as
-  agent-authored). Use `--dry-run` when experimenting.
-- Keel never merges PRs, never pushes code, and never closes issues in the
-  current slice; the only repo-write is the PRD file in your working tree.
+- **Real mode acts as you on GitHub** — comments, labels, issues, branch
+  pushes, and PRs appear under your account (with `agentspec:*` metadata
+  marking them as agent-authored). Use `--dry-run` when experimenting.
+- Keel never merges PRs, never pushes to `main`, and never force-pushes.
+  Its only pushes are `agent/<issue>-<slug>` branches from the
+  issue-implementation workflow; its only working-tree writes are PRD
+  files under `docs/prds/`. Issues close only when *you* merge a PR that
+  references them.
